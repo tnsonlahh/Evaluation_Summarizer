@@ -163,7 +163,9 @@ Mục tiêu:
 
 ## 6. Data Contract
 
-MVP không nên phụ thuộc vào implementation cụ thể của bài 1, 2, 3. Summarizer phải đọc được output metric generic, miễn là có schema tối thiểu dưới đây.
+MVP không nên phụ thuộc vào implementation cụ thể của bài 1, 2, 3. Summarizer có một **canonical schema sau normalize** như bên dưới. Raw input có thể là JSON đúng schema, DB record nội bộ, hoặc Langfuse CSV export từ evaluator.
+
+Với file `data_langfuse.csv` hiện tại: dữ liệu **đủ để chạy MVP summarization ở mức sample-level evaluation** gồm score, threshold, judge reasoning, user query, assistant answer, expected output và context. Tuy nhiên raw CSV **chưa đủ giàu** cho một số phần spec đang giả định như `product`, `agent_version`, `prompt_version`, `skill_name`, `error_taxonomy`, `severity` và baseline chính thức. Các field này phải được để `unknown`/`null`, bổ sung qua upload metadata, hoặc được suy luận với nhãn `hypothesis_low_confidence`.
 
 ### 6.1 EvalRun
 
@@ -299,13 +301,172 @@ FailPattern là object do summarizer tạo ra sau clustering.
 }
 ```
 
+### 6.6 Current evaluator output: Langfuse CSV
+
+Evaluator hiện đang xuất dữ liệu dạng Langfuse CSV, mỗi row là một observation/trace event. Summarizer phải có adapter riêng để đọc format này trước khi normalize sang schema ở 6.1-6.3.
+
+Required CSV columns for MVP:
+
+| Column | Usage |
+|---|---|
+| `id` | Raw observation id, dùng làm evidence link fallback. |
+| `timestamp` | Observation timestamp; dùng để tính `started_at`/`completed_at` theo run. |
+| `name` | Chỉ import rows có `dynamic_metric_evaluation:evaluate_sample`. |
+| `sessionId` | Chứa `run_id`, `sample_id`, `metric_id` theo pattern bên dưới. |
+| `input` | JSON string, chứa `sample.user_query`, `sample.assistant_answer`, `sample.expected_output`, `sample.context`, `sample.conversation`. |
+| `output` | JSON string, chứa `score`, `overview_reasoning`, `detail_reasoning`, `llm_step_usage`. |
+| `metadata` | JSON string, chứa `metric_id`, `metric_name`, `threshold`, evaluator model/provider và execution metadata. |
+| `tags`, `environment`, `comments` | Optional metadata/filtering. |
+
+`sessionId` pattern:
+
+```text
+dataset_dm_run:{run_id}:sample:{sample_id}:metric:{metric_id}
+```
+
+Rows không match pattern này, hoặc thiếu `input`/`output`/`metadata`, không được đưa vào aggregate chính. Chúng có thể được lưu ở raw log để debug import.
+
+Observed profile của `data_langfuse.csv`:
+
+| Item | Count |
+|---|---:|
+| Total CSV rows | 197 |
+| `dynamic_metric_evaluation:evaluate_sample` rows | 187 |
+| Rows match dataset run pattern | 146 |
+| Rows có đủ parsed `input` + `output` + `metadata` | 136 |
+| Unique eval runs | 4 |
+| Unique samples | 77 |
+| Unique metrics | 7 |
+
+Adapter mapping:
+
+| Canonical field | Langfuse CSV source |
+|---|---|
+| `EvalRun.run_id` | `sessionId.dataset_dm_run:{run_id}` |
+| `EvalRun.run_name` | `run_name` upload metadata if provided, else `Langfuse run {run_id}` |
+| `EvalRun.started_at` / `completed_at` | min/max `timestamp` per `run_id` |
+| `MetricResult.metric_name` | `metadata.metric_name` |
+| `MetricResult.score` | Average sample score for that metric in the run |
+| `MetricResult.threshold` | `metadata.threshold` |
+| `MetricResult.pass_count` / `fail_count` | Count sample metric rows by `score >= threshold` |
+| `MetricResult.status` | `FAIL` if metric average or any release criterion misses threshold; else `PASS` |
+| `SampleResult.sample_id` | `sessionId.sample:{sample_id}` |
+| `SampleResult.trace_id` | CSV `id` |
+| `SampleResult.input.user_input` | `input.sample.user_query` |
+| `SampleResult.actual_output.answer` | `input.sample.assistant_answer` |
+| `SampleResult.expected_output.answer` | `input.sample.expected_output` |
+| `SampleResult.metadata.context` | `input.sample.context` |
+| `SampleResult.metric_results[].score` | `output.score` |
+| `SampleResult.metric_results[].reason` | `output.overview_reasoning` |
+| `SampleResult.metric_results[].evidence` | `output.detail_reasoning` |
+| `SampleResult.metric_results[].error_taxonomy` | Explicit taxonomy if provided; otherwise inferred and marked low confidence |
+
+Fields that should be requested from evaluator/platform in the next iteration:
+
+- `product`, `dataset_id`, `dataset_name`, `dataset_version`.
+- `agent_version`, `model_version` of evaluated agent, `prompt_version`.
+- Explicit `run_type` and `baseline_run_id`.
+- Explicit sample `skill_name`, `scenario`, `language`, `severity`.
+- Structured `error_taxonomy` from evaluator or post-processor.
+- Stable trace/sample URL if Langfuse UI links are needed.
+
+### 6.7 Normalized input shape from Langfuse CSV
+
+Sau khi normalize, summarizer nên nhận một object duy nhất theo shape:
+
+```json
+{
+  "run": {
+    "run_id": "142f5b73-3333-45e4-9237-24a33d2595f4",
+    "run_name": "Langfuse run 142f5b73-3333-45e4-9237-24a33d2595f4",
+    "run_type": "langfuse_dataset_run",
+    "product": null,
+    "agent_version": null,
+    "model_version": null,
+    "prompt_version": null,
+    "dataset": {
+      "dataset_id": null,
+      "dataset_name": null,
+      "dataset_version": null,
+      "sample_count": 53
+    },
+    "started_at": "2026-05-26T07:24:59.189Z",
+    "completed_at": "2026-05-26T07:33:02.425Z",
+    "baseline_run_id": null,
+    "release_criteria": [
+      {
+        "metric_name": "Plain Clarity",
+        "operator": ">=",
+        "threshold": 0.9
+      }
+    ],
+    "import_source": "langfuse_csv"
+  },
+  "metric_results": [
+    {
+      "metric_name": "Plain Clarity",
+      "metric_group": "communication_quality",
+      "score": 0.0465,
+      "pass_count": 0,
+      "fail_count": 53,
+      "total_count": 53,
+      "threshold": 0.9,
+      "status": "FAIL",
+      "severity": "high",
+      "description": null
+    }
+  ],
+  "sample_results": [
+    {
+      "sample_id": "79be0842-f1a2-4d5b-8402-8f2fadef3f7b",
+      "trace_id": "02ca21aaf4e53ab43ec0d4c63baa3088",
+      "input": {
+        "user_input": "Tại sao trẻ cần tiêm vắc xin 6 trong 1 ngay từ khi mới sinh?"
+      },
+      "actual_output": {
+        "answer": "Error calling AI Health API: 401 Client Error: Unauthorized..."
+      },
+      "expected_output": {
+        "answer": "Trẻ cần tiêm vắc xin 6 trong 1 ngay từ khi mới sinh vì..."
+      },
+      "metric_results": [
+        {
+          "metric_name": "Plain Clarity",
+          "score": 0.0,
+          "status": "FAIL",
+          "threshold": 0.9,
+          "reason": "Kết quả bị đánh giá khó hiểu và không đạt vì câu trả lời chỉ là thông báo lỗi 401 Unauthorized...",
+          "error_taxonomy": "runtime_or_api_error",
+          "taxonomy_confidence": "inferred_low",
+          "evidence": "detail_reasoning from evaluator output"
+        }
+      ],
+      "metadata": {
+        "context": "",
+        "conversation": [],
+        "metric_id": "551d08d4-cebc-4ff7-9d41-bb7bca917794",
+        "evaluator_model": "gpt-5.2",
+        "environment": "default",
+        "skill_name": null,
+        "severity": "high"
+      }
+    }
+  ],
+  "import_warnings": [
+    "Missing product/agent/prompt/dataset metadata in CSV.",
+    "Missing explicit skill_name and error_taxonomy; taxonomy may be inferred with low confidence.",
+    "Rows without dataset_dm_run sessionId or parsed JSON are excluded from aggregate."
+  ]
+}
+```
+
 ---
 
 ## 7. System Architecture
 
 ```mermaid
 flowchart TD
-    A[Eval Run Result JSON / DB] --> B[Run Loader]
+    A[Eval Run Result JSON / DB / Langfuse CSV] --> B[Run Loader]
     B --> C[Normalizer]
     C --> D[Aggregation Engine]
     C --> E[Fail Pattern Clusterer]
@@ -334,8 +495,10 @@ flowchart TD
 Input:
 
 - JSON upload.
+- Langfuse CSV upload.
 - Internal DB query by `run_id`.
 - Optional baseline run.
+- Optional import metadata override: product, dataset, agent/model/prompt version, baseline run id.
 
 Output:
 
@@ -347,6 +510,9 @@ Responsibilities:
 - Check schema version.
 - Detect missing metric/sample fields.
 - Map existing evaluator output into summarizer schema.
+- For Langfuse CSV, parse JSON strings in `input`, `output`, `metadata`.
+- For Langfuse CSV, extract `run_id`, `sample_id`, `metric_id` from `sessionId`.
+- Exclude non-eval rows from aggregates but keep raw import warnings.
 
 #### 7.1.2 Normalizer
 
@@ -358,6 +524,10 @@ Responsibilities:
 - Normalize metric group.
 - Normalize taxonomy labels.
 - Attach sample-level evidence.
+- Derive sample metric status from `score >= threshold` when evaluator only emits score.
+- Aggregate one row per `(sample_id, metric_name)` into one `SampleResult` with multiple `metric_results`.
+- Default missing product/skill/version fields to `null`/`unknown`, not fabricated values.
+- Mark inferred taxonomy/root cause as low confidence when not explicitly present in evaluator output.
 
 #### 7.1.3 Aggregation Engine
 
@@ -674,6 +844,8 @@ Rules:
 
 ### 12.1 Upload run
 
+Canonical JSON import:
+
 ```http
 POST /api/eval-runs/import
 Content-Type: application/json
@@ -688,12 +860,31 @@ Request:
 }
 ```
 
+Langfuse CSV import:
+
+```http
+POST /api/eval-runs/import
+Content-Type: multipart/form-data
+```
+
+Request fields:
+
+| Field | Required | Description |
+|---|---|---|
+| `file` | yes | Langfuse CSV export. |
+| `format` | yes | `langfuse_csv`. |
+| `run_id` | no | If provided, import only one run from a CSV containing multiple runs. |
+| `baseline_run_id` | no | Optional baseline run id for comparison. |
+| `metadata` | no | JSON override for product, dataset, agent/model/prompt version, release criteria. |
+
 Response:
 
 ```json
 {
   "run_id": "run_2026_05_26_001",
   "status": "imported",
+  "imported_rows": 136,
+  "excluded_rows": 61,
   "validation_warnings": []
 }
 ```
@@ -876,6 +1067,8 @@ Suggested starter questions:
 | baseline_run_id | string nullable |
 | started_at | datetime |
 | completed_at | datetime |
+| import_source | string |
+| import_warnings_json | json |
 | raw_payload_uri | string |
 
 #### metric_results
@@ -902,6 +1095,7 @@ Suggested starter questions:
 | run_id | string |
 | sample_id | string |
 | trace_id | string |
+| raw_observation_id | string nullable |
 | input_json | json |
 | expected_json | json |
 | actual_json | json |
@@ -915,9 +1109,11 @@ Suggested starter questions:
 | sample_result_id | string |
 | metric_name | string |
 | score | float |
+| threshold | float |
 | status | string |
 | reason | text |
 | error_taxonomy | string |
+| taxonomy_confidence | string |
 | evidence | text |
 | severity | string |
 
