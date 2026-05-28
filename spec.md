@@ -1,4 +1,4 @@
-Dưới đây là toàn bộ tài liệu đặc tả thiết kế (Design Specification) hoàn chỉnh của hệ thống **Agent Evaluation Summarizer (Bài toán 8.5)**. Danh mục các **Skill** và **Tool** đã được bổ sung và lồng ghép một cách đồng nhất vào đúng cấu trúc luồng kiến trúc, mô hình dữ liệu và lộ trình phát triển theo từng Sprint của tài liệu gốc.
+
 
 ---
 
