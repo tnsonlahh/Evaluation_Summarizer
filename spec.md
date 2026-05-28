@@ -1,3 +1,7 @@
+Dưới đây là toàn bộ tài liệu đặc tả thiết kế (Design Specification) hoàn chỉnh của hệ thống **Agent Evaluation Summarizer (Bài toán 8.5)**. Danh mục các **Skill** và **Tool** đã được bổ sung và lồng ghép một cách đồng nhất vào đúng cấu trúc luồng kiến trúc, mô hình dữ liệu và lộ trình phát triển theo từng Sprint của tài liệu gốc.
+
+---
+
 # TÀI LIỆU ĐẶC TẢ THIẾT KẾ (DESIGN SPECIFICATION)
 
 ## HỆ THỐNG AGENT EVALUATION SUMMARIZER (BÀI TOÁN 8.5)
@@ -6,7 +10,7 @@
 
 ## 1. Tổng quan Hệ thống (System Overview)
 
-Hệ thống **Agent Evaluation Summarizer** được thiết kế để giải quyết bài toán xử lý lượng số liệu rải rác và phức tạp sau mỗi lượt chạy đánh giá (bao gồm Golden Experiment và Production Log) trên Evaluation Platform của VSF. Thay vì bắt buộc Kỹ sư Vận hành AI hoặc Product Owner (PO) phải tự khai thác dữ liệu thủ công, hệ thống này sẽ đóng vai trò là một **Trợ lý AI tương tác (Chat Agent + Visualization)**. Agent có khả năng tự động đọc hiểu toàn bộ kết quả run, biên soạn báo cáo phân tích thông minh, phân cụm lỗi và hỗ trợ hội thoại đa lượt để truy vấn đào sâu vào nguyên nhân gốc rễ (Root Cause).
+Hệ thống **Agent Evaluation Summarizer** được xây dựng nhằm giải quyết bài toán xử lý lượng số liệu rải rác, phức tạp sau mỗi lượt chạy đánh giá (Golden Experiment hoặc Production Log) trên nền tảng Evaluation Platform của VSF. Thay vì bắt buộc Kỹ sư Vận hành AI hoặc Product Owner (PO) phải tự khai thác dữ liệu thủ công, hệ thống này đóng vai trò là một **Trợ lý AI tương tác (Chat Agent kết hợp Visualize)**. Agent có khả năng tự động đọc hiểu toàn bộ kết quả run, biên soạn báo cáo phân tích thông minh, phân cụm lỗi và hỗ trợ hội thoại đa lượt để truy vấn đào sâu vào nguyên nhân gốc rễ (Root Cause).
 
 ### 1.1 Mục tiêu lõi (Core Objectives)
 
@@ -15,7 +19,7 @@ Hệ thống **Agent Evaluation Summarizer** được thiết kế để giải 
 
 
 * 
-**Giao diện hội thoại kết hợp trực quan (Conversational + Visual UI)**: Cho phép tương tác đặt câu hỏi bằng ngôn ngữ tự nhiên và trả về phản hồi kèm biểu đồ sinh động.
+**Giao diện hội thoại kết hợp trực quan (Conversational + Visual UI)**: Cho phép tương tác đặt câu hỏi bằng ngôn ngữ tự nhiên và trả về phản hồi kèm biểu đồ, bảng biểu sinh động.
 
 
 * 
@@ -25,61 +29,78 @@ Hệ thống **Agent Evaluation Summarizer** được thiết kế để giải 
 
 ---
 
-## 2. Kiến trúc Tổng thể & Luồng dữ liệu (Architecture & Data Flow)
+## 2. Kiến trúc Tổng thể & Nguyên lý Vận hành Agent
 
-Hệ thống được thiết kế theo mô hình **LLM Agent Workflow** sử dụng cơ chế Routing, State Memory và Dynamic Tool Calling để truy vấn kho dữ liệu phân tích.
+Hệ thống vận hành theo mô hình **Agentic Workflow** sử dụng cơ chế Routing, State Memory và các công cụ thực thi mã lệnh (Tools) được điều phối thông qua các năng lực nhận thức cấp cao (Skills).
 
-```
-                    +---------------------------------------+
-                    |  Data Ingestion Layer (Langfuse / DB)  |
-                    +---------------------------------------+
-                                        |
-                                        v (Raw Run Output JSON)
-+---------------------------------------------------------------------------------------+
-| Summarizer Agent Core Engine                                                          |
-|                                                                                       |
-|   +--------------------------+     +------------------------+     +---------------+   |
-|   |  Dynamic Parsing Parser  | --> | Error Clustering Unit  | --> | Report Gen    |   |
-|   |  (Agnostic Metric Layer) |     | (Taxonomy Mapping)     |     | (Exec/Tech)   |   |
-|   +--------------------------+     +------------------------+     +---------------+   |
-|                                                                           |           |
-|   +-------------------------------------------------------------------+   |           |
-|   | Interaction & Conversational Engine                               |<--+           |
-|   |                                                                   |               |
-|   |  +------------------+     +-----------------+     +------------+  |               |
-|   |  | Context Memory   | <-> | Intent Router   | <-> | UI Planner |  |               |
-|   |  +------------------+     +-----------------+     +------------+  |               |
-|   +-------------------------------------------------------------------+               |
-+---------------------------------------------------------------------------------------+
-                                        |
-                                        v (Rich Component Payload)
-                    +---------------------------------------+
-                    | UI Layer (Text, Tables, Charts, Link) |
-                    +---------------------------------------+
+### 2.1 Thành phần lõi trong kiến trúc:
 
-```
-
-### Các thành phần chính:
-
-1. **Dynamic Parsing Layer**: Đọc cấu trúc JSON thô từ `sample.md` (bao gồm `score`, `reasoning`, `llm_step_usage`) để chuẩn hóa thành mô hình dữ liệu tập trung.
-2. 
-**Error Clustering Unit**: Phân cụm các ca thất bại theo Taxonomy lỗi đã được định nghĩa ở các bài toán thành phần (lỗi chọn skill, lỗi chọn tool, lỗi đối số, lỗi context retention, lỗi grounded, v.v.).
+* 
+**Tầng Nhận thức (Skills)**: Các module logic độc lập, chịu trách nhiệm phân tích ý định người dùng (User Intent) từ hội thoại để lên kế hoạch xử lý, quyết định gọi Tool nào và khi nào cần trả về kết quả.
 
 
-3. 
-**Context Memory**: Bộ nhớ lưu trữ trạng thái phiên hội thoại, đảm bảo khi user hỏi các câu kế tiếp ("Tại sao nó fail?", "Show case cụ thể"), Agent hiểu rõ ngữ cảnh của run đang được chọn.
+* 
+**Tầng Thực thi (Tools)**: Các hàm mã lệnh phần mềm (Python/TypeScript Functions), API truy vấn Database hoặc các lượt gọi LLM chuyên biệt (như LLM-as-a-judge/Classifier) thực hiện các tác vụ kỹ thuật chuyên sâu.
 
 
-4. 
-**UI Planner**: Chuyển đổi phản hồi của LLM thành một Payload kết hợp giữa văn bản markdown và các UI Block (Biểu đồ, bảng dữ liệu, Deep-link).
+* 
+**Bộ nhớ ngữ cảnh (Context Memory)**: Lưu trữ trạng thái phiên hội thoại, giúp Agent giữ vững ngữ cảnh của toàn bộ run hiện hành khi người dùng đặt câu hỏi nối tiếp.
 
 
 
 ---
 
-## 3. Thiết kế Data Model nội bộ (Internal Data Model)
+## 3. Chi tiết Danh mục Bộ Skills & Tools của Agent
 
-Agent sẽ map toàn bộ dữ liệu đầu vào thành một schema phân tích toàn diện. Cấu trúc này tương đồng với file mẫu `output.md` được cung cấp:
+### 3.1. Các SKILLS (Năng lực Nhận thức của Agent)
+
+* 
+**`Skill_Generate_Run_Summary` (Tổng hợp báo cáo tự động)**: Tự động kích hoạt ngay khi người dùng mở giao diện báo cáo của một Run ID. Skill này sẽ điều phối các Tool để trích xuất tỷ lệ đạt (Pass rate), chi phí, phân cụm lỗi và trả về cấu trúc dữ liệu cho hai chế độ hiển thị: Executive View và Technical View.
+
+
+* 
+**`Skill_Diagnose_Failure_Patterns` (Chẩn đoán nguyên nhân gốc rễ)**: Chịu trách nhiệm phân tích các chuỗi lỗi liên đới. Ví dụ: Đưa ra giả thuyết chẩn đoán lỗi truyền sai đối số (`argument_correctness`) thực chất xuất phát từ việc chọn sai skill hệ thống (`skill_selection_accuracy`) ngay ở bước routing đầu tiên.
+
+
+* 
+**`Skill_Drill_Down_Query` (Hỏi đáp truy vấn ca lỗi chi tiết)**: Tiếp nhận câu hỏi tự do của người dùng (Ví dụ: *"Show 10 fail case tệ nhất skill booking"*), dịch ý định thành tham số truy vấn để trích xuất chính xác các bản ghi mẫu kèm Deep-link dẫn tới Langfuse.
+
+
+* 
+**`Skill_Analyze_Cross_Run_Trends` (Phân tích xu hướng dài hạn)**: Thực hiện so sánh hiệu năng giữa các lượt chạy để kiểm tra lỗi hồi quy (Regression analysis) hoặc phân tích xu hướng biến động chất lượng/chi phí qua chuỗi nhiều lượt chạy.
+
+
+* 
+**`Skill_Discover_Production_Gaps` (Phân tích khoảng trống dữ liệu thực tế)**: Xử lý câu hỏi nâng cao dạng: *"Production tuần này có lỗi gì golden dataset chưa cover?"*. Skill này tự động đối chiếu mô hình phân cụm lỗi ngoài Production với tập dữ liệu chuẩn mực để gợi ý bổ sung ca biên (Edge cases) vào Golden Dataset.
+
+
+
+### 3.2. Các TOOLS (Công cụ Thực thi Mã lệnh/API)
+
+* **`Tool_Fetch_Evaluation_Raw_Data`**: API kết nối vào kho lưu trữ (hoặc Langfuse) để tải toàn bộ mảng dữ liệu JSON thô của lượt chạy kiểm thử, tự động bóc tách các trường cốt lõi (`score`, `reasoning`, `llm_step_usage`).
+* 
+**`Tool_LLM_Error_Classifier_Clustering`**: Gọi một LLM chuyên biệt đóng vai trò Text Classifier nhằm đọc qua hàng loạt lý do thất bại thô, tiến hành gom nhóm ngữ nghĩa và gắn mã lỗi chuẩn hóa theo đúng sơ đồ phân loại (Taxonomy) lỗi.
+
+
+* **`Tool_Aggregate_Cost_Performance`**: Hàm toán học tính toán số liệu tài nguyên cứng. Duyệt qua mảng dữ liệu `llm_step_usage` của từng ca để tính tổng lượng token tiêu thụ, quy đổi ra chi phí USD, và đo lường tỷ lệ tiết kiệm nhờ bộ nhớ đệm (Cache hit rate).
+* 
+**`Tool_Query_Analytical_Engine`**: Nhận một đối tượng lọc cấu trúc (JSON Filter Object) do LLM biên dịch từ câu thoại của user, thực thi câu lệnh truy vấn trực tiếp xuống Database phân tích để rút ra danh sách các bản ghi mẫu chính xác.
+
+
+* 
+**`Tool_Diff_Metrics_Engine`**: Thực hiện phép toán so sánh (Diff) giữa hai ma trận điểm số của hai Run khác nhau để trích xuất các chỉ số biến động (Delta) hiệu năng và lỗi hồi quy.
+
+
+* 
+**`Tool_UI_Component_Formatter`**: Định dạng dữ liệu thô thu được từ các Tool tính toán thành cấu trúc mã Payload đồ họa tiêu chuẩn (JSON UI Component) phục vụ hiển thị (Biểu đồ cột, đồ thị đường xu hướng, bảng dữ liệu có phân trang, Deep-link Chips).
+
+
+
+---
+
+## 4. Thiết kế Data Model nội bộ (Internal Data Model)
+
+Agent sẽ chuẩn hóa toàn bộ dữ liệu đầu vào và kết quả đầu ra của các bộ Tools thành một schema cấu trúc tập trung (tương đồng với định dạng mẫu `output.md`):
 
 ```json
 {
@@ -162,163 +183,130 @@ Agent sẽ map toàn bộ dữ liệu đầu vào thành một schema phân tíc
 
 ---
 
-## 4. Kế hoạch Triển khai Chi tiết theo từng Sprint (Sprint Roadmap)
-
-Dự án được chia thành **5 Sprint** (Mỗi Sprint kéo dài 2 tuần), đảm bảo tính tiệm tiến từ hạ tầng dữ liệu đến tính năng Agent thông minh nâng cao.
+## 5. Kế hoạch Triển khai Chi tiết theo từng Sprint (Sprint Roadmap)
 
 ### SPRINT 1: Core Parsing Engine & Data Ingestion
 
-**Mục tiêu**: Xây dựng tầng Ingestion để đọc, phân tích và chuẩn hóa mọi cấu trúc JSON kết quả đầu ra từ các bộ Evaluator (Bài toán 8.1 - 8.3).
+**Mục tiêu**: Xây dựng hạ tầng kết nối dữ liệu thô và công cụ đo lường tài nguyên, chi phí vận hành.
 
-* **Tính năng chi tiết**:
-* Phát triển các module parser bất khả tri (Schema-Agnostic Parser) có khả năng tự động trích xuất các trường dữ liệu cốt lõi như `score`, `reasoning`, và `llm_step_usage` từ bất kỳ định dạng JSON thô nào của Evaluator gửi về.
-* Thiết kế công cụ kết nối (Data Connector) để kéo trace logs lịch sử chạy đánh giá từ cơ sở dữ liệu lưu trữ tập trung hoặc từ hệ thống giám sát Langfuse dựa theo tham số `run_id`.
+* **Các cấu phần phát triển**:
+* Phát triển **`Tool_Fetch_Evaluation_Raw_Data`**: Module parser bất khả tri (Schema-Agnostic Parser) có khả năng tự động trích xuất các trường dữ liệu cốt lõi như `score`, `reasoning`, và `llm_step_usage` từ cấu trúc JSON thô của Evaluator gửi về.
 
 
-* Tích hợp hệ thống phân tích chi phí và token (Cost & Telemetry Metric Aggregator) để tính toán tổng số tiền tiêu thụ, lượng token in/out, thống kê hiệu suất cache của từng bước thực thi trong pipeline kiểm thử.
+* Phát triển **`Tool_Aggregate_Cost_Performance`**: Tích hợp hệ thống phân tích chi phí và token, duyệt qua mảng dữ liệu `llm_step_usage` để thống kê lượng token in/out, quy đổi chi phí USD và ghi nhận hiệu suất cache.
+
+
 
 
 * **Đầu ra kỹ thuật (Deliverables)**:
-* Bộ thư viện Core Parsing Engine (Python/TypeScript).
-* Hệ thống API nội bộ `/api/v1/eval-runs/{run_id}/ingest` trả về dữ liệu cấu trúc hóa đã qua tinh lọc.
+* Mã nguồn hoàn chỉnh của hai công cụ nền tảng (`Tool_Fetch_Evaluation_Raw_Data`, `Tool_Aggregate_Cost_Performance`).
+* Hệ thống API nội bộ `/api/v1/eval-runs/{run_id}/ingest` trả về dữ liệu cấu trúc hóa đã qua tinh lọc tài nguyên.
 
 
 
 ### SPRINT 2: Analytical Reporter & Clustering Engine
 
-**Mục tiêu**: Phát triển công cụ tự động tạo báo cáo tĩnh (Tự động sinh khi mở báo cáo) bao gồm hai chế độ hiển thị Executive và Technical, đồng thời triển khai thuật toán phân cụm lỗi.
+**Mục tiêu**: Ứng dụng LLM phân cụm lỗi tự động và hoàn thiện năng lực sinh báo cáo tổng quan khi mở dashboard.
 
-* **Tính năng chi tiết**:
-* 
-**Phân cụm lỗi (Error Clustering Engine)**: Áp dụng LLM kết hợp thuật toán phân cụm văn bản dựa trên embedding để gộp các ca kiểm thử thất bại (Fail cases) vào các nhóm lỗi chung, tự động gán nhãn dựa trên Taxonomy lỗi (như chọn sai skill, truyền thiếu tham số, đọc sai ảnh mờ, mất ngữ cảnh hội thoại).
-
-
-* 
-**Sinh báo cáo tự động (Auto-Report Generator)**: Viết prompt template chuyên biệt cho LLM để tạo lập tức hai góc nhìn khi mở report:
+* **Các cấu phần phát triển**:
+* Phát triển **`Tool_LLM_Error_Classifier_Clustering`**: Tích hợp Prompt chuyên biệt gọi lên Azure OpenAI (Mô hình GPT-5.2 hoặc tương đương) đóng vai trò bộ phân cụm văn bản dựa trên ngữ nghĩa, tự động gán nhãn dựa trên Taxonomy lỗi hệ thống.
 
 
-* 
-*Executive View*: Tập trung vào tỷ lệ Pass Rate tổng thể, phân tích chi phí, trạng thái sức khỏe của từng nhóm sản phẩm AI và các đề xuất hành động ưu tiên dựa trên ma trận Impact × Effort.
-
-
-* *Technical View*: Đi sâu vào chi tiết so sánh chéo (Cross-run regression analysis) với bản baseline trước đó, danh sách phân cụm lỗi kèm bằng chứng và dữ liệu đo đạc tài nguyên.
-
-
-* 
-**Chẩn đoán liên chuỗi (Root Cause Diagnosis)**: Huấn luyện tư duy cho hệ thống để nhận biết liên kết lỗi chéo (ví dụ: phát hiện lỗi rò rỉ tham số ở tầng argument thực chất xuất phát từ việc chọn sai skill hệ thống ngay ở bước routing đầu tiên).
+* Phát triển **`Skill_Generate_Run_Summary`**: Điều phối các công cụ đã xây dựng ở Sprint 1 và 2 để tự động lắp ghép dữ liệu số liệu cứng và danh sách các cụm lỗi, viết phần tóm tắt cho hai góc nhìn: *Executive View* (Ma trận Impact × Effort) và *Technical View* (Giả thuyết nguyên nhân gốc rễ).
 
 
 
 
 * **Đầu ra kỹ thuật (Deliverables)**:
-* Module `ErrorClusteringService` và `ReportGenerationService`.
-* Hệ thống sinh cấu trúc JSON hoàn chỉnh cho view tổng quan (giống cấu trúc mẫu `output.md`).
+* Module logic `ErrorClusteringService` và `ReportGenerationService`.
+* Hệ thống tự động xuất cấu trúc JSON hoàn chỉnh cho view tổng quan tĩnh ngay khi mở báo cáo.
+
+
 
 
 
 ### SPRINT 3: Chat Agent Orchestration & State Management
 
-**Mục tiêu**: Xây dựng kiến trúc Runtime của Chat Agent, quản lý bộ nhớ hội thoại đa lượt và cơ chế chuyển đổi từ ngôn ngữ tự nhiên thành mã truy vấn dữ liệu.
+**Mục tiêu**: Xây dựng nền tảng tương tác thời gian thực, quản lý bộ nhớ hội thoại đa lượt và cơ chế truy vấn động.
 
-* **Tính năng chi tiết**:
-* 
-**Quản lý bộ nhớ ngữ cảnh (Agent Memory Manager)**: Triển khai Session-based Memory giúp Agent giữ vững ngữ cảnh của toàn bộ run hiện hành, cho phép người dùng hỏi các câu kế thừa dạng đại từ chỉ định mà không phải lặp lại thông tin.
-
-
-* 
-**Bộ điều hướng ý định (Intent Router & Query Translator)**: Phát triển bộ phân tích cú pháp ngôn ngữ tự nhiên để biên dịch các câu hỏi phức tạp của PO/Kỹ sư (ví dụ: *"Show 10 fail case tệ nhất skill booking"*, *"4 run gần nhất metric nào trend xấu?"*) thành mã truy vấn dữ liệu có cấu trúc (SQL / JSON Filters) để kéo thông tin chính xác từ kho lưu trữ.
+* **Các cấu phần phát triển**:
+* Phát triển **Bộ nhớ ngữ cảnh (Context Memory)**: Thiết kế Session-based Memory giúp Agent giữ vững ngữ cảnh của toàn bộ run hiện hành, cho phép người dùng hỏi các câu hỏi kế thừa đa lượt.
 
 
-* 
-**Kết xuất bằng chứng (Evidence Linking)**: Thiết kế cơ chế tự động mapping kết quả trả lời bằng text với ID của các trường dữ liệu thực tế, chuẩn bị dữ liệu đính kèm liên kết sâu (Deep-link) trực tiếp dẫn tới từng ca lỗi cụ thể để phục vụ việc debug.
+* Phát triển **`Tool_Query_Analytical_Engine`**: Bộ biên dịch ngôn ngữ tự nhiên thành các tham số truy vấn dữ liệu có cấu trúc (SQL Commands hoặc JSON Filters) để truy xuất thông tin từ Database.
+
+
+* Triển khai hoàn thiện **`Skill_Drill_Down_Query`** và **`Skill_Diagnose_Failure_Patterns`**: Cho phép Agent tiếp nhận các câu thoại tự do, thực thi truy vấn động để trả về chính xác danh sách các ca lỗi cụ thể hoặc liên kết chéo các tầng lỗi để tìm root cause.
 
 
 
 
 * **Đầu ra kỹ thuật (Deliverables)**:
-* Agent Runtime Orchestrator tích hợp với LangChain/Semantic Kernel.
-* Engine xử lý câu hỏi và trả về chuỗi cấu trúc dữ liệu thô phục vụ hiển thị.
+* Khung Agent Runtime Orchestrator quản lý hội thoại đa lượt ổn định.
+* Động cơ chat phản hồi đúng danh sách mẫu ca lỗi kèm liên kết ID khi được yêu cầu bằng ngôn ngữ tự nhiên.
+
+
 
 
 
 ### SPRINT 4: Visualization & UI Component Rendering Integration
 
-**Mục tiêu**: Xây dựng giao diện hiển thị kết hợp (Hybrid UI) biến Payload cấu trúc từ Agent thành các thành phần đồ họa tương tác trực quan.
+**Mục tiêu**: Xây dựng giao diện hiển thị kết hợp (Hybrid UI) biến Payload cấu trúc từ Agent thành các thành phần đồ họa tương tác trực quan ngay trong luồng chat.
 
-* **Tính năng chi tiết**:
-* 
-**Thư viện UI Block linh hoạt**: Xây dựng các UI component phía Frontend (React/Vue) có thể render động từ mã Payload do Agent trả về:
-
-
-* 
-*Biểu đồ cột (Bar chart)* thể hiện trực quan tỷ lệ Pass Rate theo từng Skill cụ thể.
+* **Các cấu phần phát triển**:
+* Phát triển **`Tool_UI_Component_Formatter`**: Chịu trách nhiệm chuyển đổi cấu trúc văn bản hoặc mảng dữ liệu thô thu được từ tầng Database thành mã Payload JSON quy chuẩn để vẽ đồ họa.
 
 
-* 
-*Đồ thị xu hướng (Line chart)* theo dõi biến động chất lượng qua chuỗi các lượt chạy kiểm thử khác nhau.
-
-
-* 
-*Bản đồ nhiệt (Heatmap)* thể hiện vùng mật độ tập trung lỗi nghiêm trọng.
-
-
-
-
-* 
-**Tích hợp bảng biểu & Clickable Link**: Thiết kế các bảng dữ liệu kỹ thuật có khả năng lọc, phân trang, hỗ trợ nhấp chuột trực tiếp vào Trace ID để mở tab chi tiết xem log hội thoại hoặc file ảnh/PDF gốc của người dùng.
-
-
-* 
-**Đồng bộ hóa Trạng thái Text-Visual**: Đảm bảo Agent có khả năng sinh câu thoại dẫn dắt song song với việc kích hoạt render đúng mã biểu đồ tương ứng ngay trong luồng chat trực tuyến.
+* Tích hợp các UI Blocks linh hoạt phía Frontend (React/Vue) để render động từ mã Payload do Agent trả về: Biểu đồ cột (`Bar Chart` thể hiện Pass Rate theo skill), đồ thị xu hướng (`Line Chart`), bảng dữ liệu lọc có phân trang (`Interactive Table`), và thẻ chứa liên kết sâu (`Deep-link Chips`) dẫn trực tiếp sang Langfuse.
 
 
 
 
 * **Đầu ra kỹ thuật (Deliverables)**:
-* Hệ thống Design System nội bộ gồm các Component: `<AgentChart />`, `<AgentTable />`, `<TraceDeepLink />`.
-* Giao diện khung Chat Web hoàn thiện cho phép hiển thị nội dung trực quan đan xen văn bản.
+* Thư viện Component hiển thị phía Frontend (`<AgentChart />`, `<AgentTable />`, `<TraceDeepLink />`).
+* Giao diện khung Chat Web hoàn thiện: Người dùng chat yêu cầu, Agent vừa trả lời bằng văn bản vừa kích hoạt hiển thị đúng mô hình biểu đồ tương ứng.
+
+
 
 
 
 ### SPRINT 5: Cross-Source Synthesis Engine & Production Discovery
 
-**Mục tiêu**: Triển khai tính năng tổng hợp dữ liệu chéo nâng cao giữa hai môi trường Experiment (Pre-release) và Production Log (Post-release).
+**Mục tiêu**: Triển khai các tính năng nâng cao về so sánh chéo, kiểm thử lỗi hồi quy dài hạn và đồng bộ khoảng trống dữ liệu thực tế.
 
-* **Tính năng chi tiết**:
-* 
-**Khai phá khoảng trống dữ liệu (Coverage Gap Analysis)**: Lập trình logic cho phép Agent xử lý câu hỏi nâng cao: *"Production tuần này có lỗi gì golden dataset chưa cover?"*. Agent sẽ tự động đối chiếu các mô hình phân cụm lỗi thu được ở production với tập dữ liệu chuẩn mực của Golden Dataset để chỉ ra các khoảng trống kiểm thử.
-
-
-* 
-**Gợi ý làm giàu dữ liệu (Dataset Promotion Workflow)**: Thiết kế tính năng tự động đề xuất, trích lọc các ca biên nguy hiểm (edge case) hoặc các lỗi thực tế điển hình ngoài production để đẩy ngược lại vào quy trình Curate và nâng cấp phiên bản cho Golden Dataset.
+* **Các cấu phần phát triển**:
+* Phát triển **`Tool_Diff_Metrics_Engine`**: Thực hiện thuật toán so sánh delta chỉ số chất lượng giữa các phiên bản chạy.
 
 
-* 
-**Giám sát Anomaly & Version Drift**: Xây dựng thuật toán phân tích xu hướng chạy dài hạn nhằm phát hiện xem phiên bản Agent mới triển khai có gặp hiện tượng hồi quy chất lượng âm thầm theo thời gian hay không.
+* Phát triển **`Skill_Analyze_Cross_Run_Trends`**: Đối chiếu điểm số của phiên bản hiện tại với phiên bản nền tảng (Baseline) nhằm phát hiện sớm hiện tượng hồi quy chất lượng âm thầm theo thời gian.
+
+
+* Phát triển **`Skill_Discover_Production_Gaps`**: Quét cấu trúc dữ liệu lỗi ngoài Production Log, đối chiếu mô hình cụm lỗi với độ phủ của Golden Dataset hiện tại để chỉ ra khoảng trống kiểm thử, đồng thời đưa ra khuyến nghị trích xuất ca biên để làm giàu bộ dữ liệu chuẩn mực.
 
 
 
 
 * **Đầu ra kỹ thuật (Deliverables)**:
-* Engine `CrossSourceSynthesisService`.
-* Bảng khuyến nghị tối ưu hóa Golden Dataset tích hợp trực tiếp trong cửa sổ chat của Agent.
-
-
-* Đóng gói toàn diện giải pháp, hoàn thiện kiểm thử hệ thống (End-to-End Testing).
+* Module logic nâng cao `CrossSourceSynthesisService`.
+* Đóng gói toàn diện giải pháp, hoàn thiện kiểm thử hệ thống (End-to-End Testing) và bàn giao nghiệm thu.
 
 
 
 ---
 
-## 5. Tiêu chí Đánh giá Chất lượng Agent (Evaluation & Observability)
+## 6. Tiêu chí Đánh giá Chất lượng Agent (Evaluation & Observability)
 
-Để đảm bảo hệ thống Summarizer hoạt động ổn định, chính xác và không đưa ra thông tin sai lệch, các chỉ số sau sẽ được giám sát chặt chẽ:
+Để đảm bảo hệ thống Summarizer hoạt động ổn định, chính xác và không đưa ra thông tin sai lệch (hallucination), các chỉ số sau sẽ được giám sát chặt chẽ:
 
 | Nhóm Chỉ số | Metric Đo lường | Phương pháp Kiểm tra | Tiêu chuẩn Đạt (SLA) |
 | --- | --- | --- | --- |
 | **Độ chính xác dữ liệu** | Data Extraction Accuracy | So sánh thông tin số liệu Agent nói trong hội thoại với dữ liệu JSON gốc của Run | **≥ 99.5%** (Tuyệt đối không sai lệch số liệu) |
-| **Phân cụm lỗi** | Clustering F1-Score | Đối chiếu kết quả phân cụm lỗi tự động của Agent với nhãn Taxonomy do chuyên gia kiểm định thủ công | **≥ 90%** |
-| **Khả năng giữ ngữ cảnh** | Context Retention Rate | Chạy chuỗi câu hỏi thử nghiệm đa lượt (3-5 turns) liên quan đến cùng một run thất bại | **≥ 95%** phản hồi đúng ngữ cảnh |
-| **Độ chính xác đề xuất** | Actionable Insight Relevance | Khảo sát ý kiến đội ngũ PO/Dev về tính hữu ích và chính xác của đề xuất sửa đổi prompt/model | **≥ 85%** đánh giá hữu ích |
+| **Phân cụm lỗi** | Clustering F1-Score | Đối chiếu kết quả phân cụm lỗi tự động của `Tool_LLM_Error_Classifier_Clustering` với nhãn do chuyên gia kiểm định thủ công 
 
----
+ | **≥ 90%** |
+| **Khả năng giữ ngữ cảnh** | Context Retention Rate | Chạy chuỗi câu hỏi thử nghiệm đa lượt (3-5 turns) liên quan đến cùng một run thất bại 
+
+ | **≥ 95%** phản hồi đúng ngữ cảnh |
+| **Độ chính xác đề xuất** | Actionable Insight Relevance | Khảo sát ý kiến đội ngũ PO/Dev về tính hữu ích và chính xác của đề xuất sửa đổi prompt/model 
+
+ | **≥ 85%** đánh giá hữu ích |
